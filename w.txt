@@ -1,0 +1,983 @@
+# Python and R Development Guidelines for Enterprise Windows Environment
+
+## Executive Summary
+
+This document establishes secure development practices for Python and R on Windows-based Azure Virtual Machines. With the growing adoption of these languages for data analysis, statistical modeling, and automation across our organization, it's imperative to implement standardized practices that ensure both security and repeatability. These guidelines support our IT governance framework while providing developers with clear, practical guidance for their daily workflows.
+
+## Security Context
+
+The open-source nature of Python and R ecosystems presents significant security challenges for enterprise environments. Both languages rely heavily on third-party packages, with PyPI (Python Package Index) hosting over 400,000 packages and CRAN (Comprehensive R Archive Network) offering more than 18,000 packages. This vast ecosystem, while powerful, creates substantial security exposure through the software supply chain. Recent years have seen a dramatic increase in supply chain attacks targeting these package repositories, where malicious actors compromise dependencies or create typosquatted packages to distribute malware, exfiltrate sensitive data, or establish persistent access to systems.
+
+Furthermore, the dynamic nature of these languages, combined with their extensive system access capabilities, can lead to significant security vulnerabilities when improperly implemented. Without proper controls, Python and R scripts can access sensitive system resources, perform unauthorized network communications, or process data in ways that violate organizational security policies and compliance requirements. By implementing the controls outlined in this document, we establish defense-in-depth measures that mitigate these risks while preserving the productivity benefits that these languages offer our technical teams.
+
+---
+
+## 1. Development Environment Setup
+
+### 1.1 Windows Azure VM Configuration
+
+Our organization has standardized on Windows-based Azure Virtual Machines for Python and R development. This decision balances security, manageability, and developer experience considerations.
+
+**Recommended VM Specifications:**
+- **Base OS**: Windows Server 2022 or Windows 11 Enterprise
+- **VM Size**: 
+  - Standard Development: D4s v3 (4 vCPUs, 16 GB RAM)
+  - Data Science Workloads: E8s v3 (8 vCPUs, 64 GB RAM) or larger
+- **Storage**: Minimum 256GB SSD with encryption enabled
+- **Networking**: Connected to organizational VNet with appropriate NSG rules
+
+**Why Windows?**
+Windows provides superior integration with our existing identity management, endpoint protection, and monitoring solutions. This enables consistent security controls across our development environment while maintaining compatibility with our broader IT ecosystem.
+
+### 1.2 Windows Subsystem for Linux (WSL) Integration
+
+WSL provides a valuable complement to the Windows environment, offering Linux-compatible tooling that many Python and R developers prefer. We recommend installing WSL 2 with Ubuntu 22.04 LTS as the distribution.
+
+**WSL Installation and Configuration:**
+
+```powershell
+# Install WSL with Ubuntu 22.04
+wsl --install -d Ubuntu-22.04
+
+# Set WSL 2 as the default version
+wsl --set-default-version 2
+
+# Allocate appropriate resources for WSL
+# Create or modify .wslconfig in the user's home directory
+@"
+[wsl2]
+memory=8GB
+processors=4
+swap=8GB
+"@ | Out-File $env:USERPROFILE\.wslconfig -Encoding utf8
+```
+
+**Why WSL?**
+WSL offers several benefits for our development workflow:
+1. Native Linux command-line tools and compatibility
+2. Better performance for certain Python and R workloads
+3. Simplifies testing cross-platform compatibility
+4. Reduces the need for separate Linux VMs
+
+We'll use WSL primarily for development and testing, while maintaining Windows as our primary platform for enterprise integration and security management.
+
+### 1.3 Security Baseline for Development VMs
+
+All development VMs must comply with our security baseline, which includes:
+
+1. **Endpoint Protection**: Microsoft Defender for Endpoint with advanced features enabled
+2. **Patch Management**: Automatic Windows updates with controlled deployment schedules
+3. **Identity Management**: Azure AD Join with conditional access policies
+4. **Disk Encryption**: BitLocker with TPM-based key protection
+5. **Logging and Monitoring**: Azure Monitor agents for centralized logging
+
+**Understanding the Security Model:**
+Our security approach implements multiple layers of protection while recognizing the unique needs of development environments. Rather than applying the same restrictive controls used in production environments, we focus on visibility, monitoring, and secure-by-default configurations that protect organizational assets while enabling productive development work.
+
+---
+
+## 2. Package Management with Conda
+
+### 2.1 Why Conda?
+
+Conda provides several critical advantages for enterprise Python and R development:
+
+1. **Environment Isolation**: Creates separate environments with their own dependencies, eliminating conflicts between projects
+2. **Cross-Platform Compatibility**: Works consistently across Windows and WSL
+3. **Security Benefits**: Reduces privilege requirements for package installation compared to system package managers
+4. **Reproducibility**: Environment files enable exact recreation of development environments
+5. **Multi-Language Support**: Manages both Python and R dependencies through a single tool
+
+By standardizing on Conda, we establish a consistent approach to dependency management that works across our technical teams and supports our security and reproducibility requirements.
+
+### 2.2 Conda Installation on Windows
+
+```powershell
+# Download latest Miniconda installer
+Invoke-WebRequest -Uri "https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe" -OutFile "$env:TEMP\miniconda.exe"
+
+# Verify the installer hash (example - always check the current hash on the official website)
+$fileHash = Get-FileHash -Algorithm SHA256 -Path "$env:TEMP\miniconda.exe"
+if ($fileHash.Hash -ne "EXPECTED_HASH_HERE") {
+    Write-Error "Installer hash verification failed. Possible tampering detected."
+    exit 1
+}
+
+# Install silently with administrative privileges
+Start-Process -FilePath "$env:TEMP\miniconda.exe" -ArgumentList "/S /RegisterPython=1 /AddToPath=1 /InstallationType=JustMe" -Wait
+
+# Initialize conda in PowerShell
+& "$env:USERPROFILE\miniconda3\shell\condabin\conda-hook.ps1"
+conda init powershell
+```
+
+**Security Note:** Always verify installer hashes before execution to prevent supply chain attacks. Our enterprise deployment will use SCCM/Intune to distribute pre-verified Miniconda installers.
+
+### 2.3 Conda Installation in WSL
+
+```bash
+# Download latest Miniconda installer
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh
+
+# Verify the installer
+sha256sum ~/miniconda.sh
+# Compare with the expected hash from the official website
+
+# Install
+bash ~/miniconda.sh -b -p $HOME/miniconda
+
+# Add to path
+echo 'export PATH="$HOME/miniconda/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+
+# Initialize conda
+conda init bash
+```
+
+### 2.4 Conda Configuration for Enterprise Use
+
+To ensure secure and consistent use of conda across the organization, configure the following settings:
+
+```bash
+# Set strict channel priority for more predictable environments
+conda config --set channel_priority strict
+
+# Configure to use organization's internal conda channel first, followed by trusted public channels
+conda config --add channels https://conda.organization.com/repo
+conda config --append channels conda-forge
+conda config --append channels defaults
+
+# Disable auto-activation of base environment (recommended for security)
+conda config --set auto_activate_base false
+
+# Configure environment variables for corporate proxy (if needed)
+conda config --set proxy_servers.http http://proxy.organization.com:8080
+conda config --set proxy_servers.https https://proxy.organization.com:8080
+
+# Configure SSL verification to use corporate certificate authority
+conda config --set ssl_verify /path/to/corporate/ca.crt
+```
+
+**Understanding Channel Priority:**
+Channel priority determines where conda looks for packages. By using our internal repository first, we ensure that:
+1. Packages undergo security scanning before use
+2. Dependencies are consistent across projects
+3. We maintain availability even if public repositories experience outages
+4. We can patch vulnerabilities faster than waiting for upstream fixes
+
+---
+
+## 3. Environment Management and Reproducibility
+
+### 3.1 Creating and Managing Project Environments
+
+For each project, create a dedicated conda environment defined by an `environment.yml` file. This approach ensures reproducibility and simplifies onboarding of new team members.
+
+**Environment Naming Convention:**
+Use a consistent naming pattern: `<project>-<purpose>-<python/r version>`
+
+Examples:
+- `riskmodel-dev-py310`
+- `datapipeline-prod-r42`
+
+**Sample environment.yml for a Data Science Project:**
+
+```yaml
+name: datasci-analysis-py310
+channels:
+  - https://conda.organization.com/repo
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10.11
+  - pandas=2.0.3
+  - numpy=1.24.3
+  - scikit-learn=1.3.0
+  - matplotlib=3.7.2
+  - jupyterlab=4.0.3
+  - ipykernel=6.24.0
+  - pip=23.1.2
+  - pip:
+    - azure-storage-blob==12.17.0
+    - azure-identity==1.14.0
+    - organization-internal-package==1.2.3
+```
+
+**Why Pin Exact Versions?**
+Version pinning is crucial for reproducibility and security:
+1. **Reproducibility**: Ensures identical environments across development, testing, and production
+2. **Security**: Prevents automatic updates to versions with unknown vulnerabilities
+3. **Stability**: Prevents unexpected behavior changes due to dependency updates
+
+### 3.2 Creating and Updating Environments
+
+```bash
+# Create a new environment from an environment.yml file
+conda env create -f environment.yml
+
+# Update an existing environment when dependencies change
+conda env update -f environment.yml --prune
+
+# Export an environment definition
+# Use --from-history to include only packages explicitly requested
+conda env export --from-history > environment.yml
+
+# Export a full environment with exact versions of all dependencies
+conda env export > environment-full.yml
+```
+
+**The `--prune` Flag Explained:**
+When updating environments, the `--prune` flag removes packages that are no longer specified in the environment file. This prevents environment drift and ensures that environments remain clean and consistent with their definitions.
+
+### 3.3 Environment Activation and Use
+
+**Windows (PowerShell):**
+```powershell
+# Activate an environment
+conda activate datasci-analysis-py310
+
+# Run Python from the activated environment
+python script.py
+
+# Deactivate when finished
+conda deactivate
+```
+
+**WSL (Bash):**
+```bash
+# Activate an environment
+conda activate datasci-analysis-py310
+
+# Run Python from the activated environment
+python script.py
+
+# Deactivate when finished
+conda deactivate
+```
+
+### 3.4 Creating Jupyter Kernels for Environments
+
+For data science workflows that use Jupyter notebooks, register your conda environments as Jupyter kernels:
+
+```bash
+# Activate your environment
+conda activate datasci-analysis-py310
+
+# Install the ipykernel package if not already installed
+conda install ipykernel
+
+# Register the environment as a Jupyter kernel
+python -m ipykernel install --user --name datasci-analysis-py310 --display-name "Python 3.10 (Data Science)"
+```
+
+This allows selecting specific environments when creating notebooks, ensuring they run with the correct dependencies.
+
+---
+
+## 4. Dependency Management and Security
+
+### 4.1 Understanding Dependency Security Risks
+
+Dependencies introduce significant security risks through several vectors:
+
+1. **Vulnerability Propagation**: Vulnerabilities in dependencies can affect your code
+2. **Supply Chain Attacks**: Malicious actors may compromise legitimate packages
+3. **Typosquatting**: Malicious packages with names similar to legitimate ones
+4. **Dependency Confusion**: Attackers exploit naming conflicts between public and private repositories
+
+Our approach to dependency management focuses on mitigating these risks while maintaining developer productivity.
+
+### 4.2 Internal Package Repositories
+
+All Python and R packages must be retrieved from our internal repositories, which mirror and scan external packages:
+
+**Python Configuration (pip):**
+
+```ini
+# ~/.pip/pip.conf (WSL) or %APPDATA%\pip\pip.ini (Windows)
+[global]
+index-url = https://pypi.organization.com/simple
+trusted-host = pypi.organization.com
+```
+
+**R Configuration:**
+
+```r
+# Create or modify .Rprofile in the user's home directory
+options(repos = c(ORGANIZATION = "https://cran.organization.com",
+                 CRAN = "https://cloud.r-project.org"))
+```
+
+**Why Use Internal Repositories?**
+Internal repositories provide critical security benefits:
+1. **Vulnerability Scanning**: All packages are scanned before being made available
+2. **Air-Gapping Option**: Can operate disconnected from the internet if needed
+3. **Availability**: Protects against external repository outages
+4. **Compliance**: Maintains audit trail of package usage
+
+### 4.3 Dependency Auditing and Vulnerability Management
+
+Regular auditing of dependencies is essential for maintaining security. Implement the following practices:
+
+1. **Automated Weekly Scans**:
+   ```bash
+   # Example using safety (should be replaced with your organization's tool)
+   safety check -r requirements.txt
+   ```
+
+2. **Pre-commit Hooks**: Implement Git pre-commit hooks that scan for vulnerable dependencies before code is committed
+
+3. **CI/CD Pipeline Integration**: Block builds with known vulnerable dependencies
+
+4. **Vulnerability Response Process**:
+   - Critical/High: Address within 7 days
+   - Medium: Address within 30 days
+   - Low: Address during next planned update cycle
+
+### 4.4 Dependency Lockfiles
+
+In addition to environment.yml files, use language-specific lockfiles to ensure exact dependency resolution:
+
+**Python (using pip-tools):**
+```bash
+# Generate requirements.txt from environment.yml
+pip-compile environment.yml --output-file requirements.txt
+
+# Install from requirements.txt
+pip install -r requirements.txt
+```
+
+**R (using renv):**
+```r
+# Initialize renv for a project
+renv::init()
+
+# Take a snapshot of the current project state
+renv::snapshot()
+
+# Restore project from lockfile
+renv::restore()
+```
+
+**Why Use Lockfiles?**
+Lockfiles record the exact version of every dependency, including transitive dependencies. This ensures that identical packages are installed regardless of when or where the installation occurs, eliminating the "it works on my machine" problem.
+
+---
+
+## 5. Code Development Practices
+
+### 5.1 Integrated Development Environments (IDEs)
+
+Our standard approved IDEs for Python and R development are:
+
+1. **Visual Studio Code**
+   - Recommended for both Python and R development
+   - Supports WSL integration
+   - Extensions:
+     - Python extension by Microsoft
+     - R extension by REditorSupport
+     - Remote - WSL extension for WSL integration
+
+2. **PyCharm Professional**
+   - Recommended for complex Python development
+   - Supports professional features like remote development
+
+3. **RStudio Desktop/Server**
+   - Recommended for R-focused workflows
+   - Integrates well with renv for environment management
+
+**IDE Security Configuration:**
+- Disable telemetry and crash reporting to external services
+- Configure extensions to use internal package sources
+- Enable secure credential storage using Azure Key Vault integration
+
+### 5.2 Version Control Best Practices
+
+All code must be stored in the organization's approved version control system (Azure DevOps or GitHub Enterprise). Follow these practices:
+
+1. **Branch Protection Rules**:
+   - Main/master branches should be protected
+   - Require pull request reviews before merging
+   - Enforce status checks to pass before merging
+
+2. **Commit Practices**:
+   - Make atomic commits that address a single concern
+   - Use descriptive commit messages with ticket/issue references
+   - Sign commits with Azure AD-backed keys
+
+3. **Repository Configuration**:
+   - Include appropriate .gitignore files to prevent committing credentials or large data
+   - Use .gitattributes to handle line endings consistently across Windows and WSL
+   - Implement pre-commit hooks for linting and security scanning
+
+### 5.3 Code Quality Standards
+
+#### Python Standards
+- **Code Style**: Follow PEP 8 with adjustments documented in our style guide
+- **Formatting**: Use Black with a line length of 100 characters
+- **Linting**: Use Flake8 with our organization's rule set
+- **Type Checking**: Use mypy with strict mode enabled
+- **Documentation**: Follow Google docstring format
+
+```bash
+# Install code quality tools
+conda install black flake8 mypy
+
+# Format code
+black src/
+
+# Run linter
+flake8 src/
+
+# Run type checker
+mypy src/
+```
+
+#### R Standards
+- **Code Style**: Follow the tidyverse style guide
+- **Formatting**: Use the styler package
+- **Linting**: Use the lintr package with organization-specific rules
+- **Documentation**: Use roxygen2 for function documentation
+
+```r
+# Install code quality tools
+install.packages(c("styler", "lintr"))
+
+# Format code
+styler::style_dir("R/")
+
+# Run linter
+lintr::lint_dir("R/")
+```
+
+**Why These Standards Matter:**
+Consistent code style and quality standards deliver several benefits:
+1. **Readability**: Makes code easier to understand and maintain
+2. **Error Prevention**: Catches common mistakes before they reach production
+3. **Onboarding**: Reduces the learning curve for new team members
+4. **Security**: Many security vulnerabilities stem from poor code quality
+
+### 5.4 Testing Requirements
+
+Comprehensive testing is essential for code quality and security:
+
+- **Unit Tests**: Test individual functions and classes in isolation
+  - Minimum 80% code coverage required
+  - Focus on boundary conditions and error cases
+
+- **Integration Tests**: Test how components work together
+  - Required for all code that interacts with external systems
+  - Must use mocks for external services in CI/CD pipeline
+
+- **Test Frameworks**:
+  - Python: pytest
+  - R: testthat
+
+```bash
+# Running Python tests with coverage
+pytest --cov=src tests/
+
+# Running R tests
+R -e "testthat::test_dir('tests')"
+```
+
+**Automated Testing in CI/CD:**
+Configure Azure DevOps pipelines to run tests automatically for each pull request and merge to main branches. Tests must pass before code can be merged.
+
+---
+
+## 6. Security Implementation
+
+### 6.1 Secret Management
+
+Never store secrets in code. Use Azure Key Vault for all credential management:
+
+```python
+# Python example using Azure Identity and Key Vault
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
+
+# Use Managed Identity or environment-based authentication
+credential = DefaultAzureCredential()
+secret_client = SecretClient(vault_url="https://my-keyvault.vault.azure.net/", credential=credential)
+
+# Retrieve a secret
+db_password = secret_client.get_secret("db-password").value
+```
+
+```r
+# R example using AzureKeyVault package
+library(AzureKeyVault)
+
+# Use Managed Identity for authentication
+vault <- key_vault("https://my-keyvault.vault.azure.net/")
+
+# Retrieve a secret
+db_password <- vault$secrets$get("db-password")
+```
+
+### 6.2 Secure Coding Patterns
+
+Follow these secure coding patterns to prevent common vulnerabilities:
+
+1. **Input Validation**:
+   - Validate all inputs, especially those from external sources
+   - Use schema validation libraries (Pydantic for Python, validate for R)
+
+2. **SQL Injection Prevention**:
+   - Use parameterized queries or ORMs instead of string concatenation
+   - In Python, use SQLAlchemy or psycopg2 with parameters
+   - In R, use parameterized queries with DBI package
+
+3. **Secure Data Handling**:
+   - Minimize storage of sensitive data
+   - Use appropriate data masking and encryption
+   - Implement proper data sanitization before output
+
+4. **Secure File Operations**:
+   - Validate file paths to prevent path traversal
+   - Use secure random file names for temporary files
+   - Implement proper file permissions
+
+### 6.3 Code Security Scanning
+
+Implement automated security scanning in your development workflow:
+
+```yaml
+# Azure DevOps Pipeline Example
+trigger:
+  - main
+  - feature/*
+
+pool:
+  vmImage: 'windows-latest'
+
+steps:
+- task: UsePythonVersion@0
+  inputs:
+    versionSpec: '3.10'
+    
+- script: |
+    pip install bandit safety
+    bandit -r src/
+    safety check -r requirements.txt
+  displayName: 'Security Scan'
+```
+
+**Security Scanning Tools:**
+- **Python**: Bandit, Safety, OWASP Dependency Check
+- **R**: lintr with security rules, OWASP Dependency Check
+
+---
+
+## 7. Data Management and Privacy
+
+### 7.1 Data Storage Guidelines
+
+Store project data securely following these guidelines:
+
+1. **Development Data**:
+   - Store in Azure Storage (Blob or Files)
+   - Use appropriate access controls
+   - Never store production data in development environments
+
+2. **Sensitive Data**:
+   - Encrypt at rest and in transit
+   - Use data classification tools to identify sensitive information
+   - Implement data minimization principles
+
+3. **Test Data**:
+   - Use synthetic or anonymized data for testing
+   - Document data generation processes
+
+### 7.2 Azure Storage Integration
+
+Use the Azure SDKs to interact with Azure Storage securely:
+
+```python
+# Python example
+from azure.identity import DefaultAzureCredential
+from azure.storage.blob import BlobServiceClient
+
+# Authenticate with Azure AD
+credential = DefaultAzureCredential()
+blob_service = BlobServiceClient(
+    account_url="https://mystorageaccount.blob.core.windows.net",
+    credential=credential
+)
+
+# Upload a file
+container_client = blob_service.get_container_client("mycontainer")
+with open("./data/myfile.csv", "rb") as data:
+    container_client.upload_blob(name="myfile.csv", data=data)
+```
+
+```r
+# R example
+library(AzureStor)
+
+# Authenticate with Azure AD
+token <- AzureRMR::get_azure_token("https://storage.azure.com")
+storage_endp <- storage_endpoint("https://mystorageaccount.blob.core.windows.net", token)
+cont <- storage_container(storage_endp, "mycontainer")
+
+# Upload a file
+storage_upload(cont, src="./data/myfile.csv", dest="myfile.csv")
+```
+
+### 7.3 Data Privacy Compliance
+
+Ensure all data handling complies with relevant privacy regulations:
+
+1. **Data Classification**:
+   - Identify and tag data according to sensitivity
+   - Apply appropriate controls based on classification
+
+2. **Data Retention**:
+   - Implement data lifecycle policies
+   - Automate deletion of data that exceeds retention periods
+
+3. **Privacy Impact Assessment**:
+   - Conduct PIAs for projects handling personal data
+   - Document compliance measures
+
+---
+
+## 8. R-Specific Guidelines
+
+### 8.1 R in Enterprise Windows Environment
+
+R presents unique considerations in a Windows enterprise environment:
+
+1. **Installation Method**:
+   - Prefer conda for R installation to ensure consistency with Python environments
+   - Alternative: Install from organization's internal CRAN mirror
+
+2. **Package Management**:
+   - Use renv for reproducible environments
+   - Configure default repository to use internal CRAN mirror
+
+3. **Integration with Azure**:
+   - Use AzureR family of packages for Azure service integration
+   - Configure Azure AD authentication for secure access
+
+### 8.2 R Environment Management with renv
+
+The renv package provides R-specific environment management:
+
+```r
+# Initialize a new project with renv
+renv::init()
+
+# Install packages
+install.packages("tidyverse")
+install.packages("dplyr")
+
+# Save the current state of the project
+renv::snapshot()
+
+# Restore the project to the state in renv.lock
+renv::restore()
+```
+
+**renv vs. conda for R:**
+While conda can manage R environments, renv provides R-specific advantages:
+1. Better handling of CRAN package versioning
+2. More precise dependency resolution for R packages
+3. Native integration with RStudio
+
+Consider using both in tandem: conda for creating the base R environment, and renv for managing R packages within that environment.
+
+### 8.3 Recommended R Packages
+
+The following packages are recommended for enterprise R development:
+
+1. **Data Manipulation**:
+   - tidyverse: Collection of packages for data science
+   - data.table: Fast data manipulation
+
+2. **Database Connectivity**:
+   - DBI: Database interface
+   - odbc: ODBC database connections
+   - RSQLite: SQLite interface
+
+3. **Azure Integration**:
+   - AzureR: Family of packages for Azure services
+   - AzureKeyVault: Secure credential management
+   - AzureStor: Azure Storage integration
+
+4. **Reproducibility**:
+   - renv: Environment management
+   - targets: Pipeline toolkit for reproducible workflows
+
+5. **Reporting**:
+   - rmarkdown: Dynamic document generation
+   - knitr: Report generation
+   - shiny: Interactive web applications
+
+---
+
+## 9. Python-Specific Guidelines
+
+### 9.1 Python in Enterprise Windows Environment
+
+Python works well in a Windows enterprise environment with some considerations:
+
+1. **Installation Method**:
+   - Use conda as the primary installation method
+   - Register the conda Python as the system Python interpreter
+
+2. **Path and Environment Variables**:
+   - Ensure PATH environment variables are properly configured
+   - Watch for conflicts between Windows and WSL Python installations
+
+3. **Windows-Specific Packages**:
+   - Use pywin32 for Windows-specific functionality
+   - Use winreg for registry access when needed
+
+### 9.2 Virtual Environments Beyond Conda
+
+While conda is our primary environment management tool, these alternatives are supported:
+
+1. **venv** (built-in):
+   ```powershell
+   # Create virtual environment
+   python -m venv .venv
+   
+   # Activate (Windows)
+   .\.venv\Scripts\Activate.ps1
+   
+   # Activate (WSL)
+   source .venv/bin/activate
+   ```
+
+2. **Poetry** (for advanced dependency management):
+   ```powershell
+   # Initialize a new project
+   poetry new my-project
+   
+   # Add dependencies
+   poetry add pandas numpy
+   
+   # Install dependencies
+   poetry install
+   ```
+
+### 9.3 Recommended Python Packages
+
+The following packages are recommended for enterprise Python development:
+
+1. **Data Science**:
+   - numpy: Numerical computing
+   - pandas: Data manipulation
+   - scikit-learn: Machine learning
+   - matplotlib/seaborn: Visualization
+
+2. **Web Development**:
+   - fastapi: Modern API framework
+   - flask: Lightweight web framework
+   - requests: HTTP client
+
+3. **Azure Integration**:
+   - azure-identity: Authentication
+   - azure-storage-blob: Blob storage
+   - azure-keyvault-secrets: Secret management
+
+4. **DevOps**:
+   - black: Code formatting
+   - flake8: Linting
+   - pytest: Testing
+   - mypy: Type checking
+
+---
+
+## 10. Deployment and Operations
+
+### 10.1 Containerization with Docker
+
+Containerize Python and R applications for deployment:
+
+```dockerfile
+# Example Dockerfile for Python application
+FROM mcr.microsoft.com/windows/servercore:ltsc2022
+
+# Install Miniconda
+RUN powershell -Command \
+    Invoke-WebRequest -Uri https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe -OutFile miniconda.exe ; \
+    Start-Process -FilePath miniconda.exe -ArgumentList '/S /InstallationType=JustMe /AddToPath=1' -Wait ; \
+    Remove-Item miniconda.exe
+
+# Set up conda environment
+COPY environment.yml .
+RUN C:\Users\ContainerAdministrator\miniconda3\Scripts\conda.exe env create -f environment.yml
+
+# Activate environment and set as default shell
+SHELL ["C:\\Users\\ContainerAdministrator\\miniconda3\\Scripts\\conda.exe", "run", "-n", "myenv", "powershell", "-Command"]
+
+# Copy application code
+COPY . /app
+WORKDIR /app
+
+# Run the application
+CMD ["python", "app.py"]
+```
+
+**Container Security:**
+- Use Microsoft Container Registry (MCR) base images
+- Scan containers for vulnerabilities before deployment
+- Implement least privilege principles within containers
+
+### 10.2 CI/CD Integration
+
+Implement CI/CD pipelines in Azure DevOps:
+
+```yaml
+# Azure DevOps Pipeline for Python/R Project
+trigger:
+  - main
+
+pool:
+  vmImage: 'windows-latest'
+
+stages:
+- stage: Build
+  jobs:
+  - job: BuildAndTest
+    steps:
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '3.10'
+    
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+      displayName: 'Install dependencies'
+    
+    - script: |
+        pytest tests/ --junitxml=test-results.xml
+      displayName: 'Run tests'
+    
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: 'test-results.xml'
+      condition: succeededOrFailed()
+    
+    - script: |
+        black --check src/
+        flake8 src/
+        bandit -r src/
+      displayName: 'Run code quality checks'
+```
+
+**Pipeline Security Considerations:**
+- Store secrets in Azure Key Vault, not pipeline variables
+- Use dedicated service connections with least privilege
+- Implement approval gates for production deployments
+
+### 10.3 Monitoring and Logging
+
+Implement monitoring for Python and R applications:
+
+1. **Application Insights Integration**:
+   ```python
+   # Python example with OpenCensus
+   from opencensus.ext.azure.trace_exporter import AzureExporter
+   from opencensus.trace.samplers import ProbabilitySampler
+   from opencensus.trace.tracer import Tracer
+   
+   tracer = Tracer(
+       exporter=AzureExporter(
+           connection_string="InstrumentationKey=00000000-0000-0000-0000-000000000000"
+       ),
+       sampler=ProbabilitySampler(1.0)
+   )
+   
+   # Use tracing
+   with tracer.span(name="main_function"):
+       # Your code here
+       pass
+   ```
+
+2. **Centralized Logging**:
+   - Configure the Python logging module to send logs to Azure Monitor
+   - Use structured logging for better query capabilities
+
+3. **Performance Monitoring**:
+   - Monitor CPU, memory, and disk usage
+   - Set up alerts for abnormal resource consumption
+
+---
+
+## 11. Documentation Requirements
+
+### 11.1 Code Documentation
+
+All code must be properly documented:
+
+1. **Python Docstrings**:
+   ```python
+   def calculate_risk_score(customer_data, model_parameters, threshold=0.5):
+       """
+       Calculate risk score for a customer.
+       
+       Args:
+           customer_data (pd.DataFrame): Customer data containing features.
+           model_parameters (dict): Parameters for the risk model.
+           threshold (float, optional): Risk threshold. Defaults to 0.5.
+           
+       Returns:
+           float: Risk score between 0 and 1.
+           
+       Raises:
+           ValueError: If customer_data is missing required columns.
+       """
+       # Implementation
+   ```
+
+2. **R Documentation**:
+   ```r
+   #' Calculate risk score for a customer
+   #'
+   #' @param customer_data A data frame containing customer features
+   #' @param model_parameters A list of parameters for the risk model
+   #' @param threshold Risk threshold, defaults to 0.5
+   #'
+   #' @return A numeric risk score between 0 and 1
+   #'
+   #' @examples
+   #' calculate_risk_score(customer_sample, default_params)
+   calculate_risk_score <- function(customer_data, model_parameters, threshold = 0.5) {
+     # Implementation
+   }
+   ```
+
+### 11.2 Project Documentation
+
+Each project must include:
+
+1. **README.md**: Project overview, setup instructions, usage examples
+2. **CONTRIBUTING.md**: Guidelines for contributing to the project
+3. **docs/**: Directory for detailed documentation
+   - Architecture diagrams
+   - API documentation
+   - Development guides
+
+### 11.3 Knowledge Base
+
+Maintain a centralized knowledge base for best practices and solutions to common problems. This should include:
+
+1. **Troubleshooting Guides**: Solutions to common issues
+2. **Setup Tutorials**: Step-by-step guides for environment setup
+3. **Code Examples**: Reusable patterns and examples
+4. **Security Guidelines**: Language-specific security best practices
+
+---
+
+## 12. Compliance and Governance
+
+### 12.1 Dependency License Compliance
+
+All open-source dependencies must comply with our license policy:
+
+1. **Approved Licenses**:
